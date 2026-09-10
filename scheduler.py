@@ -138,7 +138,7 @@ class POMDPScheduler:
         n_bands,
         p_on=0.02,
         p_stay=0.90,
-        p_detect=0.5,
+        p_detect=0.8,
         p_false_alarm=0.1,
         exploration=0.1
     ):

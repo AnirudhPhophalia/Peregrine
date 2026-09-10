@@ -2,40 +2,37 @@ import numpy as np
 
 from config import (
     N_BANDS,
-    TARGET_SLOTS,
-    MAX_SLOTS
+    FREQ_MIN_GHZ,
+    FREQ_MAX_GHZ,
+    SIMULATION_DURATION_US,
+    SLOT_DURATION_US,
+    MAX_SLOTS,
+    MIN_PW_US,
+    MAX_PW_US
 )
 
 
-def estimate_slot_width(toa, target_slots=TARGET_SLOTS):
+# MEMORY ESTIMATE
+def print_memory_estimate(
+    n_bands,
+    n_slots
+):
 
-    toa = np.asarray(toa, dtype=np.float64)
-    toa = toa[np.isfinite(toa)]
+    occupancy_bytes = (
+        n_bands * n_slots
+    )
 
-    if len(toa) == 0:
-        raise ValueError("No valid TOA values found.")
+    amplitude_bytes = (
+        n_bands * n_slots * 4
+    )
 
-    span = toa.max() - toa.min()
+    pw_bytes = (
+        n_bands * n_slots * 4
+    )
 
-    if span <= 0:
-        raise ValueError("TOA span is zero or negative.")
-
-    return span / target_slots
-
-
-def print_memory_estimate(n_bands, n_slots):
-
-    # occupancy uint8
-    occupancy_bytes = n_bands * n_slots
-
-    # amplitude float32
-    amplitude_bytes = n_bands * n_slots * 4
-
-    # PW float32
-    pw_bytes = n_bands * n_slots * 4
-
-    # AoA float32
-    aoa_bytes = n_bands * n_slots * 4
+    aoa_bytes = (
+        n_bands * n_slots * 4
+    )
 
     total = (
         occupancy_bytes
@@ -55,44 +52,65 @@ def print_memory_estimate(n_bands, n_slots):
     print("==========================================\n")
 
 
+# BUILD RF GRID
 def build_grid(
     df,
     freq_col,
     toa_col,
     pw_col=2,
     aoa_col=3,
-    amp_col=4,
-    slot_width=None
+    amp_col=4
 ):
 
     # Validate columns
-    for col, name in [
-        (freq_col, "frequency"),
-        (toa_col, "TOA"),
-        (pw_col, "PW"),
-        (aoa_col, "AoA"),
-        (amp_col, "amplitude")
-    ]:
+    required = {
+        freq_col: "frequency",
+        toa_col: "TOA",
+        pw_col: "PW",
+        aoa_col: "AoA",
+        amp_col: "amplitude"
+    }
+
+    for col, name in required.items():
+
         if col not in df.columns:
+
             raise ValueError(
                 f"{name} column '{col}' not found."
             )
 
-    # Get values
-    freq = df[freq_col].to_numpy(dtype=np.float64)
-    toa = df[toa_col].to_numpy(dtype=np.float64)
-    pw = df[pw_col].to_numpy(dtype=np.float64)
-    aoa = df[aoa_col].to_numpy(dtype=np.float64)
-    amp = df[amp_col].to_numpy(dtype=np.float64)
+    # Extract dataset columns
+    freq = df[freq_col].to_numpy(
+        dtype=np.float64
+    )
+
+    toa = df[toa_col].to_numpy(
+        dtype=np.float64
+    )
+
+    pw = df[pw_col].to_numpy(
+        dtype=np.float64
+    )
+
+    aoa = df[aoa_col].to_numpy(
+        dtype=np.float64
+    )
+
+    amp = df[amp_col].to_numpy(
+        dtype=np.float64
+    )
 
     # Remove invalid rows
     valid = (
         np.isfinite(freq)
-        & np.isfinite(toa)
-        & np.isfinite(pw)
-        & np.isfinite(aoa)
-        & np.isfinite(amp)
-        & (pw >= 0)
+        &
+        np.isfinite(toa)
+        &
+        np.isfinite(pw)
+        &
+        np.isfinite(aoa)
+        &
+        np.isfinite(amp)
     )
 
     freq = freq[valid]
@@ -101,69 +119,107 @@ def build_grid(
     aoa = aoa[valid]
     amp = amp[valid]
 
+    # Restrict frequency to receiver spectrum
+    valid_freq = (
+        (freq >= FREQ_MIN_GHZ)
+        &
+        (freq <= FREQ_MAX_GHZ)
+    )
+
+    freq = freq[valid_freq]
+    toa = toa[valid_freq]
+    pw = pw[valid_freq]
+    aoa = aoa[valid_freq]
+    amp = amp[valid_freq]
+
+    # Restrict pulse widths
+    valid_pw = (
+        (pw >= MIN_PW_US)
+        &
+        (pw <= MAX_PW_US)
+    )
+
+    freq = freq[valid_pw]
+    toa = toa[valid_pw]
+    pw = pw[valid_pw]
+    aoa = aoa[valid_pw]
+    amp = amp[valid_pw]
+
     if len(freq) == 0:
-        raise ValueError("No valid PDWs remain.")
 
-    print("Valid PDWs:", len(freq))
+        raise ValueError(
+            "No valid PDWs remain after filtering."
+        )
 
-    # Slot width
-    if slot_width is None:
-        slot_width = estimate_slot_width(toa)
+    print(
+        "Valid PDWs:",
+        len(freq)
+    )
 
-    if slot_width <= 0:
-        raise ValueError("slot_width must be > 0.")
+    # Simulation time
+    valid_time = (
+        (toa >= 0)
+        &
+        (toa < SIMULATION_DURATION_US)
+    )
 
-    # Relative time
-    toa_min = toa.min()
-    rel_toa = toa - toa_min
+    freq = freq[valid_time]
+    toa = toa[valid_time]
+    pw = pw[valid_time]
+    aoa = aoa[valid_time]
+    amp = amp[valid_time]
 
-    # Pulse END = TOA + PW
-    pulse_end = rel_toa + pw
+    if len(freq) == 0:
 
-    # Number of slots
+        raise ValueError(
+            "No PDWs fall inside the simulation interval."
+        )
+
+    # Number of simulation slots
     n_slots = int(
-        np.ceil(pulse_end.max() / slot_width)
-    ) + 1
+        np.ceil(
+            SIMULATION_DURATION_US
+            / SLOT_DURATION_US
+        )
+    )
 
     if n_slots > MAX_SLOTS:
+
         raise MemoryError(
-            f"Grid requires {n_slots:,} slots, "
-            f"but MAX_SLOTS is {MAX_SLOTS:,}."
+            f"Simulation requires "
+            f"{n_slots:,} slots, but MAX_SLOTS is "
+            f"{MAX_SLOTS:,}."
         )
 
-    # Frequency bands
-    freq_min = freq.min()
-    freq_max = freq.max()
-    freq_range = freq_max - freq_min
+    # Frequency band mapping
+    band_width = (
+        FREQ_MAX_GHZ - FREQ_MIN_GHZ
+    ) / N_BANDS
 
-    if freq_range == 0:
-
-        bands = np.zeros(
-            len(freq),
-            dtype=np.int32
+    bands = (
+        (
+            freq - FREQ_MIN_GHZ
         )
+        / band_width
+    ).astype(np.int32)
 
-    else:
+    bands = np.clip(
+        bands,
+        0,
+        N_BANDS - 1
+    )
 
-        bands = (
-            (freq - freq_min)
-            / freq_range
-            * N_BANDS
-        ).astype(np.int32)
-
-        bands = np.clip(
-            bands,
-            0,
-            N_BANDS - 1
-        )
-
-    # Start/end slots for each pulse
-    start_slots = np.floor(
-        rel_toa / slot_width
+    # Time-slot mapping
+    start_slots = (
+        toa / SLOT_DURATION_US
     ).astype(np.int64)
 
-    end_slots = np.ceil(
-        pulse_end / slot_width
+    # PW determines how many physical time slots the pulse
+    # remains active.
+
+    end_slots = (
+        (toa + pw)
+        / SLOT_DURATION_US
     ).astype(np.int64)
 
     start_slots = np.clip(
@@ -178,7 +234,7 @@ def build_grid(
         n_slots - 1
     )
 
-    # Create grids
+    # Allocate grids
     occupancy_grid = np.zeros(
         (N_BANDS, n_slots),
         dtype=np.uint8
@@ -201,8 +257,15 @@ def build_grid(
         dtype=np.float32
     )
 
-    # Put pulses into grid
-    for b, s0, s1, a, p, angle in zip(
+    # Insert pulses
+    for (
+        band,
+        start,
+        end,
+        amplitude,
+        pulse_width,
+        angle
+    ) in zip(
         bands,
         start_slots,
         end_slots,
@@ -211,41 +274,91 @@ def build_grid(
         aoa
     ):
 
-        if s1 < s0:
+        if end < start:
             continue
 
-        for s in range(s0, s1 + 1):
+        # Make sure the pulse doesn't extend beyond the
+        # simulation.
 
-            occupancy_grid[b, s] = 1
+        end = min(
+            end,
+            n_slots - 1
+        )
 
-            # Keep strongest signal
-            if a > amplitude_grid[b, s]:
+        occupancy_grid[
+            band,
+            start:end + 1
+        ] = 1
 
-                amplitude_grid[b, s] = a
-                pw_grid[b, s] = p
-                aoa_grid[b, s] = angle
+        # If multiple pulses overlap in the same band,
+        # retain the strongest received signal.
 
-    print("\n========== GRID PARAMETERS ==========")
-    print("Frequency min:", freq_min)
-    print("Frequency max:", freq_max)
-    print("Original TOA min:", toa_min)
-    print("Slot width:", slot_width)
-    print("Number of slots:", n_slots)
-    print("=====================================\n")
+        current = amplitude_grid[
+            band,
+            start:end + 1
+        ]
+
+        stronger = (
+            amplitude > current
+        )
+
+        amplitude_grid[
+            band,
+            start:end + 1
+        ][stronger] = amplitude
+
+        pw_grid[
+            band,
+            start:end + 1
+        ][stronger] = pulse_width
+
+        aoa_grid[
+            band,
+            start:end + 1
+        ][stronger] = angle
+
+    # Diagnostics
+    print("\n========== RF GRID ==========")
+
+    print(
+        "Frequency range:",
+        f"{FREQ_MIN_GHZ} - {FREQ_MAX_GHZ} GHz"
+    )
+    print(
+        "Band width:",
+        f"{band_width:.3f} GHz"
+    )
+    print(
+        "Slot duration:",
+        f"{SLOT_DURATION_US} us"
+    )
+    print(
+        "Simulation duration:",
+        f"{SIMULATION_DURATION_US / 1e6:.2f} s"
+    )
+    print(
+        "Number of slots:",
+        f"{n_slots:,}"
+    )
+    print(
+        "Grid shape:",
+        occupancy_grid.shape
+    )
+    print(
+        "Occupied cells:",
+        int(occupancy_grid.sum())
+    )
+    print("=============================\n")
 
     print_memory_estimate(
         N_BANDS,
         n_slots
     )
 
-    print("Final grid shape:", occupancy_grid.shape)
-    print("Occupied cells:", int(occupancy_grid.sum()))
-    print("Total cells:", occupancy_grid.size)
-
     return (
         occupancy_grid,
         amplitude_grid,
         pw_grid,
         aoa_grid,
-        slot_width
+        SLOT_DURATION_US
     )

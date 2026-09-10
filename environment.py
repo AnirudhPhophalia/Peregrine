@@ -1,19 +1,27 @@
 import numpy as np
 
 from config import (
-    NOISE_FLOOR_DB,
+    FREQ_MIN_GHZ,
+    FREQ_MAX_GHZ,
+    RECEIVER_BANDWIDTH_BANDS,
+    NOISE_FLOOR_DBM,
     NOISE_STD_DB,
-    RECEIVER_SENSITIVITY_DB,
+    RECEIVER_SENSITIVITY_DBM,
     DETECTION_SNR_50_DB,
     DETECTION_SLOPE,
     BASE_FALSE_ALARM_RATE,
     DWELL_SLOTS,
-    RETUNE_SLOTS
+    RETUNE_SLOTS,
+    SIMULATION_DURATION_S,
+    SLOT_DURATION_US,
+    FALSE_ALARM_THRESHOLD_DB,
+    FALSE_ALARM_SLOPE
 )
 
 
 class ScanEnvironment:
 
+    # INITIALIZATION
     def __init__(
         self,
         occupancy_grid,
@@ -28,61 +36,93 @@ class ScanEnvironment:
         self.pw_grid = pw_grid
         self.aoa_grid = aoa_grid
 
-        self.n_bands, self.n_slots = (
-            occupancy_grid.shape
-        )
+        (
+            self.n_bands,
+            self.n_slots
+        ) = occupancy_grid.shape
 
-        self.rng = np.random.default_rng(seed)
+        self.rng = np.random.default_rng(
+            seed
+        )
 
         self.reset()
 
-    # Reset
+    # RESET
     def reset(self):
 
         self.t = 0
 
         self.current_band = None
+
         self.target_band = None
 
         self.retune_remaining = 0
+
         self.dwell_remaining = 0
+
+        self.mode = "SCAN"
 
         return self.t
 
-    # Noise
-    def sample_noise(self):
+    # NOISE MODEL
+    def sample_noise_power(self):
 
         return self.rng.normal(
-            NOISE_FLOOR_DB,
+            NOISE_FLOOR_DBM,
             NOISE_STD_DB
         )
 
-    # Detection probability
-    def detection_probability(
+    # SNR
+    def calculate_snr(
         self,
-        amplitude,
-        noise
+        signal_power_dbm,
+        noise_power_dbm
     ):
 
-        snr = amplitude - noise
+        return (
+            signal_power_dbm
+            - noise_power_dbm
+        )
 
-        # Below receiver sensitivity:
-        # essentially impossible to detect.
-        if amplitude < RECEIVER_SENSITIVITY_DB:
+    # DETECTION PROBABILITY
+    def detection_probability(
+        self,
+        signal_power_dbm,
+        noise_power_dbm
+    ):
+
+        # Signal below receiver sensitivity cannot be
+        # meaningfully detected.
+
+        if (
+            signal_power_dbm
+            < RECEIVER_SENSITIVITY_DBM
+        ):
+
             return 0.0
+
+        snr_db = self.calculate_snr(signal_power_dbm, noise_power_dbm)
 
         x = (
             DETECTION_SLOPE
-            * (snr - DETECTION_SNR_50_DB)
+            * (snr_db - DETECTION_SNR_50_DB)
         )
 
-        # Numerically stable sigmoid
-        x = np.clip(x, -50, 50)
+        x = np.clip(
+            x,
+            -50,
+            50
+        )
 
-        return 1.0 / (1.0 + np.exp(-x))
+        probability = (1.0/(1.0+np.exp(-x)))
 
-    # Observe current band
-    def observe(self, band):
+        return probability
+
+    # SCAN OBSERVATION
+    def observe_band(
+        self,
+        band
+    ):
 
         truth = int(
             self.occupancy_grid[
@@ -91,16 +131,18 @@ class ScanEnvironment:
             ]
         )
 
-        noise = self.sample_noise()
+        noise_power = (
+            self.sample_noise_power()
+        )
 
-        amplitude = float(
+        signal_power = float(
             self.amplitude_grid[
                 band,
                 self.t
             ]
         )
 
-        pw = float(
+        pulse_width = float(
             self.pw_grid[
                 band,
                 self.t
@@ -114,168 +156,366 @@ class ScanEnvironment:
             ]
         )
 
-        # Active signal
+        # REAL SIGNAL
         if truth == 1:
 
-            p_detect = self.detection_probability(
-                amplitude,
-                noise
+            snr_db = self.calculate_snr(
+                signal_power,
+                noise_power
             )
 
-            obs = int(
+            p_detect = (
+                self.detection_probability(
+                    signal_power,
+                    noise_power
+                )
+            )
+
+            detected = int(
                 self.rng.random()
                 < p_detect
             )
 
-            snr = amplitude - noise
-
             return (
-                obs,
+                detected,
                 truth,
                 {
+                    "mode": "SCAN",
                     "scanned": True,
                     "retuning": False,
+
                     "band": band,
-                    "amplitude": amplitude,
-                    "noise": noise,
-                    "snr": snr,
-                    "pw": pw,
-                    "aoa": aoa,
-                    "p_detect": p_detect
+
+                    "signal_power_dbm":
+                        signal_power,
+
+                    "noise_power_dbm":
+                        noise_power,
+
+                    "snr_db":
+                        snr_db,
+
+                    "p_detect":
+                        p_detect,
+
+                    "pw_us":
+                        pulse_width,
+
+                    "aoa":
+                        aoa
                 }
             )
 
-        # Empty spectrum
-        obs = int(
+        # NO SIGNAL
+        false_alarm = int(
             self.rng.random()
             < BASE_FALSE_ALARM_RATE
         )
 
         return (
-            obs,
+            false_alarm,
             truth,
             {
+                "mode": "SCAN",
                 "scanned": True,
                 "retuning": False,
+
                 "band": band,
-                "amplitude": None,
-                "noise": noise,
-                "snr": None,
-                "pw": 0.0,
-                "aoa": np.nan,
-                "p_detect": None
+
+                "signal_power_dbm":
+                    None,
+
+                "noise_power_dbm":
+                    noise_power,
+
+                "snr_db":
+                    None,
+
+                "p_detect":
+                    None,
+
+                "pw_us":
+                    0.0,
+
+                "aoa":
+                    np.nan
             }
         )
 
-    # Step
-    def step(self, requested_band):
+    # STARE / ORACLE OBSERVATION
+    def stare(self):
+
+        if self.t >= self.n_slots:
+
+            raise RuntimeError(
+                "Simulation has finished."
+            )
+
+        observations = np.zeros(
+            self.n_bands,
+            dtype=np.int8
+        )
+
+        truths = self.occupancy_grid[
+            :,
+            self.t
+        ].copy()
+
+        noise = np.zeros(
+            self.n_bands,
+            dtype=np.float32
+        )
+
+        snr = np.full(
+            self.n_bands,
+            np.nan,
+            dtype=np.float32
+        )
+
+        p_detect = np.full(
+            self.n_bands,
+            np.nan,
+            dtype=np.float32
+        )
+
+        # Oracle receiver sees every band simultaneously.
+        for band in range(
+            self.n_bands
+        ):
+
+            noise_power = (
+                self.sample_noise_power()
+            )
+
+            noise[band] = (
+                noise_power
+            )
+
+            if truths[band] == 1:
+
+                signal_power = float(
+                    self.amplitude_grid[
+                        band,
+                        self.t
+                    ]
+                )
+
+                snr_db = (
+                    self.calculate_snr(
+                        signal_power,
+                        noise_power
+                    )
+                )
+
+                probability = (
+                    self.detection_probability(
+                        signal_power,
+                        noise_power
+                    )
+                )
+
+                detection = int(
+                    self.rng.random()
+                    < probability
+                )
+
+                observations[band] = (
+                    detection
+                )
+
+                snr[band] = (
+                    snr_db
+                )
+
+                p_detect[band] = (
+                    probability
+                )
+
+            else:
+
+                observations[band] = int(
+                    self.rng.random()
+                    < BASE_FALSE_ALARM_RATE
+                )
+
+        return (
+            observations,
+            truths,
+            {
+                "mode": "STARE",
+                "scanned": True,
+                "noise_dbm": noise,
+                "snr_db": snr,
+                "p_detect": p_detect
+            }
+        )
+
+    # SCAN STEP
+    def step(
+        self,
+        requested_band
+    ):
 
         if not (
-            0 <= requested_band < self.n_bands
+            0 <= requested_band
+            < self.n_bands
         ):
+
             raise ValueError(
                 "Invalid band index."
             )
 
         if self.t >= self.n_slots:
+
             raise RuntimeError(
-                "Simulation finished. Call reset()."
+                "Simulation has finished."
             )
 
-        # Currently retuning
+        # RETUNING
         if self.retune_remaining > 0:
-
-            actual_band = (
-                self.target_band
-            )
 
             self.retune_remaining -= 1
 
-            obs = 0
-            truth = 0
-
             info = {
+                "mode": "SCAN",
                 "scanned": False,
                 "retuning": True,
-                "band": actual_band,
-                "amplitude": None,
-                "noise": None,
-                "snr": None,
-                "pw": 0.0,
-                "aoa": np.nan,
-                "p_detect": None
-            }
 
-            done = (
-                self.t == self.n_slots - 1
-            )
+                "band":
+                    self.target_band,
+
+                "signal_power_dbm":
+                    None,
+
+                "noise_power_dbm":
+                    None,
+
+                "snr_db":
+                    None,
+
+                "p_detect":
+                    None,
+
+                "pw_us":
+                    0.0,
+
+                "aoa":
+                    np.nan
+            }
 
             self.t += 1
 
-            return obs, truth, done, info
-
-        # During dwell
-        if self.dwell_remaining > 0:
-
-            actual_band = self.current_band
-
-            obs, truth, info = self.observe(
-                actual_band
+            done = (
+                self.t
+                >= self.n_slots
             )
 
-            info["dwell"] = True
+            return (
+                0,
+                0,
+                done,
+                info
+            )
+
+        # DWELL
+        if self.dwell_remaining > 0:
+
+            band = self.current_band
+
+            (
+                observation,
+                truth,
+                info
+            ) = self.observe_band(
+                band
+            )
 
             self.dwell_remaining -= 1
 
-            done = (
-                self.t == self.n_slots - 1
-            )
+            info["dwell"] = True
 
             self.t += 1
 
-            return obs, truth, done, info
+            done = (
+                self.t
+                >= self.n_slots
+            )
 
-        # New band requested
+            return (
+                observation,
+                truth,
+                done,
+                info
+            )
+
+        # CHANGE BAND
         if (
-            self.current_band is None
-            or requested_band != self.current_band
+            self.current_band
+            is None
+            or requested_band
+            != self.current_band
         ):
 
-            self.target_band = requested_band
+            self.target_band = (
+                requested_band
+            )
+
+            self.current_band = (
+                requested_band
+            )
 
             self.retune_remaining = max(
                 RETUNE_SLOTS - 1,
                 0
             )
 
-            self.current_band = requested_band
-
-            # First slot is spent retuning.
-            obs = 0
-            truth = 0
-
-            info = {
-                "scanned": False,
-                "retuning": True,
-                "band": requested_band,
-                "amplitude": None,
-                "noise": None,
-                "snr": None,
-                "pw": 0.0,
-                "aoa": np.nan,
-                "p_detect": None
-            }
-
-            done = (
-                self.t == self.n_slots - 1
-            )
-
             self.t += 1
 
-            return obs, truth, done, info
+            done = (
+                self.t
+                >= self.n_slots
+            )
 
-        # Scan
-        obs, truth, info = self.observe(
+            info = {
+                "mode": "SCAN",
+                "scanned": False,
+                "retuning": True,
+
+                "band":
+                    requested_band,
+
+                "signal_power_dbm":
+                    None,
+
+                "noise_power_dbm":
+                    None,
+
+                "snr_db":
+                    None,
+
+                "p_detect":
+                    None,
+
+                "pw_us":
+                    0.0,
+
+                "aoa":
+                    np.nan
+            }
+
+            return (
+                0,
+                0,
+                done,
+                info
+            )
+
+        # NORMAL SCAN
+        (
+            observation,
+            truth,
+            info
+        ) = self.observe_band(
             self.current_band
         )
 
@@ -284,10 +524,16 @@ class ScanEnvironment:
             0
         )
 
-        done = (
-            self.t == self.n_slots - 1
-        )
-
         self.t += 1
 
-        return obs, truth, done, info
+        done = (
+            self.t
+            >= self.n_slots
+        )
+
+        return (
+            observation,
+            truth,
+            done,
+            info
+        )
