@@ -1,21 +1,53 @@
 import numpy as np
 
-# ROUND ROBIN
+
+# Round Robin
+
 class RoundRobinScheduler:
 
-    def __init__(self, n_bands):
+    def __init__(
+        self,
+        n_bands
+    ):
+
         self.n_bands = n_bands
 
-    def select_action(self, t):
-        return t % self.n_bands
+        self.current_band = 0
 
-    def update(self, action, obs):
+
+    def select_action(
+        self,
+        t=None
+    ):
+
+        action = (
+            self.current_band
+        )
+
+        self.current_band = (
+            self.current_band + 1
+        ) % self.n_bands
+
+        return action
+
+
+    def update(
+        self,
+        action,
+        obs
+    ):
+
         pass
 
+
 # UCB
+
 class UCBScheduler:
 
-    def __init__(self, n_bands):
+    def __init__(
+        self,
+        n_bands
+    ):
 
         self.n_bands = n_bands
 
@@ -29,205 +61,65 @@ class UCBScheduler:
             dtype=np.float64
         )
 
-    def select_action(self, t):
 
-        for i in range(self.n_bands):
+    def select_action(
+        self,
+        t=None
+    ):
 
-            if self.counts[i] == 0:
-                return i
+        for band in range(
+            self.n_bands
+        ):
 
-        total = np.sum(self.counts)
+            if (
+                self.counts[band]
+                == 0
+            ):
 
-        p_hat = (
+                return band
+
+        total = np.sum(
+            self.counts
+        )
+
+        means = (
             self.successes
             / self.counts
         )
 
         bonus = np.sqrt(
-            2 * np.log(total + 1)
+            2.0
+            * np.log(total + 1.0)
             / self.counts
         )
 
-        scores = p_hat + bonus
-
-        return int(np.argmax(scores))
-
-    def update(self, action, obs):
-
-        if action < 0:
-            return
-
-        self.counts[action] += 1
-        self.successes[action] += obs
-
-
-# RESTLESS BANDIT
-class RestlessBanditScheduler:
-
-    def __init__(
-        self,
-        n_bands,
-        prior=0.05,
-        decay=0.98,
-        exploration=0.2
-    ):
-
-        self.n_bands = n_bands
-
-        self.prior = prior
-        self.decay = decay
-        self.exploration = exploration
-
-        self.beliefs = np.full(
-            n_bands,
-            prior,
-            dtype=np.float64
-        )
-
-        self.counts = np.zeros(
-            n_bands,
-            dtype=np.int64
-        )
-
-    def select_action(self, t):
-
-        uncertainty = np.sqrt(
-            np.log(t + 2)
-            / (self.counts + 1)
-        )
-
         scores = (
-            self.beliefs
-            + self.exploration * uncertainty
+            means + bonus
         )
 
         return int(
             np.argmax(scores)
         )
 
-    def update(self, action, obs):
 
-        # Every band evolves.
-        self.beliefs = (
-            self.decay * self.beliefs
-            +
-            (1 - self.decay) * self.prior
-        )
+    def update(
+        self,
+        action,
+        obs
+    ):
 
         if action < 0:
             return
 
         self.counts[action] += 1
 
-        alpha = 1.0 / np.sqrt(
-            self.counts[action]
+        self.successes[action] += (
+            obs
         )
 
-        self.beliefs[action] = (
-            (1 - alpha)
-            * self.beliefs[action]
-            +
-            alpha * obs
-        )
 
-# POMDP
-class POMDPScheduler:
+# Scan experiment
 
-    def __init__(
-        self,
-        n_bands,
-        p_on=0.02,
-        p_stay=0.90,
-        p_detect=0.8,
-        p_false_alarm=0.1,
-        exploration=0.1
-    ):
-
-        self.n_bands = n_bands
-
-        self.beliefs = np.full(
-            n_bands,
-            0.05,
-            dtype=np.float64
-        )
-
-        self.p_on = p_on
-        self.p_stay = p_stay
-
-        self.p_detect = p_detect
-        self.p_false_alarm = p_false_alarm
-
-        self.exploration = exploration
-
-    def predict(self):
-
-        self.beliefs = (
-            self.beliefs * self.p_stay
-            +
-            (1 - self.beliefs) * self.p_on
-        )
-
-    def select_action(self, t):
-
-        uncertainty = (
-            4
-            * self.beliefs
-            * (1 - self.beliefs)
-        )
-
-        scores = (
-            self.beliefs
-            + self.exploration * uncertainty
-        )
-
-        return int(
-            np.argmax(scores)
-        )
-
-    def update(self, action, obs):
-
-        if action < 0:
-            return
-
-        self.predict()
-
-        prior = self.beliefs[action]
-
-        if obs == 1:
-
-            numerator = (
-                self.p_detect * prior
-            )
-
-            denominator = (
-                self.p_detect * prior
-                +
-                self.p_false_alarm
-                * (1 - prior)
-            )
-
-        else:
-
-            numerator = (
-                (1 - self.p_detect)
-                * prior
-            )
-
-            denominator = (
-                (1 - self.p_detect)
-                * prior
-                +
-                (1 - self.p_false_alarm)
-                * (1 - prior)
-            )
-
-        if denominator > 0:
-
-            self.beliefs[action] = (
-                numerator / denominator
-            )
-
-# RUN SCHEDULER
 def run_scheduler(
     occupancy_grid,
     amplitude_grid,
@@ -237,7 +129,9 @@ def run_scheduler(
     seed=0
 ):
 
-    from environment import ScanEnvironment
+    from environment import (
+        ScanEnvironment
+    )
 
     env = ScanEnvironment(
         occupancy_grid=occupancy_grid,
@@ -249,9 +143,10 @@ def run_scheduler(
 
     env.reset()
 
-    n_slots = occupancy_grid.shape[1]
+    n_slots = (
+        occupancy_grid.shape[1]
+    )
 
-    # -1 means the receiver was not scanning
     actions = np.full(
         n_slots,
         -1,
@@ -273,10 +168,14 @@ def run_scheduler(
         dtype=np.int8
     )
 
-    snr = np.full(
+    retuning = np.zeros(
         n_slots,
-        np.nan,
-        dtype=np.float32
+        dtype=np.int8
+    )
+
+    dwell = np.zeros(
+        n_slots,
+        dtype=np.int8
     )
 
     amplitudes = np.full(
@@ -285,60 +184,125 @@ def run_scheduler(
         dtype=np.float32
     )
 
-    p_detect = np.full(
+    noises = np.full(
+        n_slots,
+        np.nan,
+        dtype=np.float32
+    )
+
+    snrs = np.full(
+        n_slots,
+        np.nan,
+        dtype=np.float32
+    )
+
+    p_detects = np.full(
+        n_slots,
+        np.nan,
+        dtype=np.float32
+    )
+
+    p_false_alarms = np.full(
+        n_slots,
+        np.nan,
+        dtype=np.float32
+    )
+
+    pws = np.full(
+        n_slots,
+        np.nan,
+        dtype=np.float32
+    )
+
+    aoas = np.full(
         n_slots,
         np.nan,
         dtype=np.float32
     )
 
     done = False
+
     t = 0
 
     while not done:
 
-        requested_action = (
+        requested_band = (
             scheduler.select_action(t)
         )
 
-        obs, truth, done, info = env.step(
-            requested_action
+        (
+            observation,
+            truth,
+            done,
+            info
+        ) = env.step(
+            requested_band,
+            mode="scan"
         )
 
-        actual_band = info["band"]
+        observations[t] = (
+            observation
+        )
+
+        truths[t] = truth
+
+        retuning[t] = int(
+            info["retuning"]
+        )
+
+        dwell[t] = int(
+            info["dwell"]
+        )
 
         if info["scanned"]:
 
-            actions[t] = actual_band
             scanned[t] = 1
 
+            actions[t] = (
+                info["band"]
+            )
+
             scheduler.update(
-                actual_band,
-                obs
+                info["band"],
+                observation
+            )
+
+            amplitudes[t] = (
+                info["amplitude"]
+            )
+
+            noises[t] = (
+                info["noise"]
             )
 
             if info["snr"] is not None:
-                snr[t] = info["snr"]
 
-            if info["amplitude"] is not None:
-                amplitudes[t] = (
-                    info["amplitude"]
+                snrs[t] = (
+                    info["snr"]
                 )
 
-            if info["p_detect"] is not None:
-                p_detect[t] = (
-                    info["p_detect"]
-                )
+            p_detects[t] = (
+                info["p_detect"]
+            )
+
+            p_false_alarms[t] = (
+                info["p_false_alarm"]
+            )
+
+            pws[t] = (
+                info["pw"]
+            )
+
+            aoas[t] = (
+                info["aoa"]
+            )
 
         else:
 
-            # No useful observation was obtained.
             scheduler.update(
                 -1,
                 0
             )
-
-        observations[t] = obs
-        truths[t] = truth
 
         t += 1
 
@@ -347,7 +311,165 @@ def run_scheduler(
         observations,
         truths,
         scanned,
-        snr,
+        retuning,
+        dwell,
         amplitudes,
-        p_detect
+        noises,
+        snrs,
+        p_detects,
+        p_false_alarms,
+        pws,
+        aoas
+    )
+
+
+# Stare experiment
+
+def run_stare(
+    occupancy_grid,
+    amplitude_grid,
+    pw_grid,
+    aoa_grid,
+    seed=0
+):
+
+    from environment import (
+        ScanEnvironment
+    )
+
+    env = ScanEnvironment(
+        occupancy_grid=occupancy_grid,
+        amplitude_grid=amplitude_grid,
+        pw_grid=pw_grid,
+        aoa_grid=aoa_grid,
+        seed=seed
+    )
+
+    env.reset()
+
+    n_bands, n_slots = (
+        occupancy_grid.shape
+    )
+
+    observations = np.zeros(
+        (
+            n_bands,
+            n_slots
+        ),
+        dtype=np.int8
+    )
+
+    truths = np.zeros(
+        (
+            n_bands,
+            n_slots
+        ),
+        dtype=np.int8
+    )
+
+    amplitudes = np.full(
+        (
+            n_bands,
+            n_slots
+        ),
+        np.nan,
+        dtype=np.float32
+    )
+
+    noises = np.full(
+        (
+            n_bands,
+            n_slots
+        ),
+        np.nan,
+        dtype=np.float32
+    )
+
+    snrs = np.full(
+        (
+            n_bands,
+            n_slots
+        ),
+        np.nan,
+        dtype=np.float32
+    )
+
+    p_detects = np.full(
+        (
+            n_bands,
+            n_slots
+        ),
+        np.nan,
+        dtype=np.float32
+    )
+
+    p_false_alarms = np.full(
+        (
+            n_bands,
+            n_slots
+        ),
+        np.nan,
+        dtype=np.float32
+    )
+
+    done = False
+
+    while not done:
+
+        (
+            obs,
+            truth,
+            amplitude,
+            noise,
+            snr,
+            p_detect,
+            p_false_alarm,
+            done
+        ) = env.stare_step()
+
+        t = env.t - 1
+
+        observations[
+            :,
+            t
+        ] = obs
+
+        truths[
+            :,
+            t
+        ] = truth
+
+        amplitudes[
+            :,
+            t
+        ] = amplitude
+
+        noises[
+            :,
+            t
+        ] = noise
+
+        snrs[
+            :,
+            t
+        ] = snr
+
+        p_detects[
+            :,
+            t
+        ] = p_detect
+
+        p_false_alarms[
+            :,
+            t
+        ] = p_false_alarm
+
+    return (
+        observations,
+        truths,
+        amplitudes,
+        noises,
+        snrs,
+        p_detects,
+        p_false_alarms
     )
