@@ -2,24 +2,28 @@ import time
 
 from dataset_loader import load_dataset
 from inspect_dataset import inspect_dataset
-from build_grid import build_grid
+from build_grid import (
+    build_grid,
+    estimate_slot_width
+)
 
 from scheduler import (
     RoundRobinScheduler,
     UCBScheduler,
-    run_scheduler,
-    run_stare
+    RestlessBanditScheduler,
+    POMDPScheduler,
+    run_scheduler
 )
 
 from metrics import (
-    calculate_scan_metrics,
-    calculate_stare_metrics,
-    print_scan_metrics,
-    print_stare_metrics
+    calculate_metrics,
+    print_metrics
 )
 
+from config import TARGET_SLOTS
 
-def run_scan_experiment(
+
+def run_experiment(
     name,
     scheduler,
     occupancy_grid,
@@ -28,11 +32,8 @@ def run_scan_experiment(
     aoa_grid
 ):
 
-    print("\n")
-    print("=" * 60)
-    print(
-        f"RUNNING SCAN: {name}"
-    )
+    print("\n" + "=" * 60)
+    print(f"RUNNING: {name}")
     print("=" * 60)
 
     start = time.perf_counter()
@@ -42,21 +43,21 @@ def run_scan_experiment(
         observations,
         truths,
         scanned,
-        retuning,
-        dwell,
+        snr,
         amplitudes,
-        noises,
-        snrs,
-        p_detects,
-        p_false_alarms,
-        pws,
-        aoas
+        p_detect
     ) = run_scheduler(
+
         occupancy_grid=occupancy_grid,
+
         amplitude_grid=amplitude_grid,
+
         pw_grid=pw_grid,
+
         aoa_grid=aoa_grid,
+
         scheduler=scheduler,
+
         seed=0
     )
 
@@ -65,120 +66,56 @@ def run_scan_experiment(
         - start
     )
 
-    results = calculate_scan_metrics(
-        occupancy_grid=occupancy_grid,
-        actions=actions,
-        observations=observations,
-        truths=truths,
-        scanned=scanned
+    results = calculate_metrics(
+
+        occupancy_grid,
+
+        actions,
+
+        observations,
+
+        truths,
+
+        scanned
     )
 
-    print_scan_metrics(
+    print_metrics(
         name,
         results
     )
 
     print(
-        f"\nRuntime: "
-        f"{runtime:.4f} seconds"
+        f"\nRuntime: {runtime:.4f} seconds"
     )
 
-    print(
-        f"Scanned slots: "
-        f"{int(scanned.sum()):,}"
-    )
-
-    print(
-        f"Retuning slots: "
-        f"{int(retuning.sum()):,}"
-    )
-
-    print(
-        f"Dwell slots: "
-        f"{int(dwell.sum()):,}"
-    )
-
-    return (
-        results,
-        runtime
-    )
-
-
-def run_stare_experiment(
-    occupancy_grid,
-    amplitude_grid,
-    pw_grid,
-    aoa_grid
-):
-
-    print("\n")
-    print("=" * 60)
-    print("RUNNING STARE REFERENCE")
-    print("=" * 60)
-
-    start = time.perf_counter()
-
-    (
-        observations,
-        truths,
-        amplitudes,
-        noises,
-        snrs,
-        p_detects,
-        p_false_alarms
-    ) = run_stare(
-        occupancy_grid=occupancy_grid,
-        amplitude_grid=amplitude_grid,
-        pw_grid=pw_grid,
-        aoa_grid=aoa_grid,
-        seed=0
-    )
-
-    runtime = (
-        time.perf_counter()
-        - start
-    )
-
-    results = calculate_stare_metrics(
-        occupancy_grid,
-        observations
-    )
-
-    print_stare_metrics(
-        results
-    )
-
-    print(
-        f"\nRuntime: "
-        f"{runtime:.4f} seconds"
-    )
-
-    return (
-        results,
-        runtime
-    )
+    return results, runtime
 
 
 def main():
-
-    print(
-        "\nLOADING DATASET..."
-    )
-
+    print("\nLOADING DATASET...")
     df = load_dataset()
-
     inspect_dataset(df)
-
-    print(
-        "\nBUILDING RF "
-        "GROUND TRUTH..."
-    )
-
+    # DATASET COLUMNS
     TOA_COL = 0
     FREQ_COL = 1
     PW_COL = 2
     AOA_COL = 3
     AMP_COL = 4
+    # SLOT WIDTH
+    print(
+        "\nCALCULATING SLOT WIDTH..."
+    )
+    slot_width = estimate_slot_width(
+        df[TOA_COL].to_numpy(),
+        TARGET_SLOTS
+    )
+    print(
+        "Slot width:",
+        slot_width
+    )
+
+    # BUILD RF ENVIRONMENT
+    print("\nBUILDING RF GROUND TRUTH...")
 
     (
         occupancy_grid,
@@ -187,38 +124,30 @@ def main():
         aoa_grid,
         slot_width
     ) = build_grid(
+
         df=df,
+
         freq_col=FREQ_COL,
+
         toa_col=TOA_COL,
+
         pw_col=PW_COL,
+
         aoa_col=AOA_COL,
-        amp_col=AMP_COL
+
+        amp_col=AMP_COL,
+
+        slot_width=slot_width
     )
 
-    print(
-        f"\nUsing slot width: "
-        f"{slot_width}"
-    )
-
+    # NUMBER OF BANDS
     n_bands = (
         occupancy_grid.shape[0]
     )
 
-    print("\n")
-    print("=" * 60)
-    print("STARE REFERENCE")
-    print("=" * 60)
-
-    stare_results, stare_runtime = (
-        run_stare_experiment(
-            occupancy_grid,
-            amplitude_grid,
-            pw_grid,
-            aoa_grid
-        )
-    )
-
+    # CREATE SCHEDULERS
     schedulers = {
+
         "ROUND ROBIN":
             RoundRobinScheduler(
                 n_bands
@@ -227,89 +156,214 @@ def main():
         "UCB BANDIT":
             UCBScheduler(
                 n_bands
+            ),
+
+        "RESTLESS BANDIT":
+            RestlessBanditScheduler(
+                n_bands
+            ),
+
+        "POMDP":
+            POMDPScheduler(
+                n_bands
             )
     }
 
+    # RUN
     all_results = {}
 
-    for name, scheduler in (
-        schedulers.items()
-    ):
+    for name, scheduler in schedulers.items():
 
-        results, runtime = (
-            run_scan_experiment(
-                name,
-                scheduler,
-                occupancy_grid,
-                amplitude_grid,
-                pw_grid,
-                aoa_grid
-            )
+        results, runtime = run_experiment(
+
+            name,
+
+            scheduler,
+
+            occupancy_grid,
+
+            amplitude_grid,
+
+            pw_grid,
+
+            aoa_grid
         )
 
         all_results[name] = {
+
             "metrics": results,
+
             "runtime": runtime
         }
 
+    # FINAL COMPARISON
     print("\n")
-    print("=" * 80)
-    print("FINAL COMPARISON")
-    print("=" * 80)
+
+    print("=" * 100)
+    print("FINAL SCHEDULER COMPARISON")
+    print("=" * 100)
+
+    names = [
+
+        "ROUND ROBIN",
+
+        "UCB BANDIT",
+
+        "RESTLESS BANDIT",
+
+        "POMDP"
+    ]
 
     print(
-        f"{'Metric':<30}"
-        f"{'STARE':>16}"
-        f"{'ROUND ROBIN':>18}"
+        f"{'Metric':<25}"
+        f"{'Round Robin':>16}"
         f"{'UCB':>16}"
+        f"{'Restless':>16}"
+        f"{'POMDP':>16}"
     )
 
-    print("-" * 80)
+    print("-" * 100)
 
-    rr = all_results[
-        "ROUND ROBIN"
-    ]["metrics"]
-
-    ucb = all_results[
-        "UCB BANDIT"
-    ]["metrics"]
-
+    # Capture rate
     print(
-        f"{'POD':<30}"
-        f"{stare_results['POD']:>16.4f}"
-        f"{rr['receiver_POD']:>18.4f}"
-        f"{ucb['receiver_POD']:>16.4f}"
+        f"{'Capture Rate':<25}",
+        end=""
     )
 
+    for name in names:
+
+        value = (
+            all_results[name]
+            ["metrics"]
+            ["capture_rate"]
+        )
+
+        print(
+            f"{value:>15.2%}",
+            end=" "
+        )
+
+    print()
+
+    # POD
     print(
-        f"{'POFA':<30}"
-        f"{stare_results['POFA']:>16.4f}"
-        f"{rr['POFA']:>18.4f}"
-        f"{ucb['POFA']:>16.4f}"
+        f"{'POD':<25}",
+        end=""
     )
 
+    for name in names:
+
+        value = (
+            all_results[name]
+            ["metrics"]
+            ["POD"]
+        )
+
+        print(
+            f"{value:>15.4f}",
+            end=" "
+        )
+
+    print()
+
+    # POFA
     print(
-        f"{'Interception Rate':<30}"
-        f"{'N/A':>16}"
-        f"{rr['interception_rate']:>18.4f}"
-        f"{ucb['interception_rate']:>16.4f}"
+        f"{'POFA':<25}",
+        end=""
     )
 
+    for name in names:
+
+        value = (
+            all_results[name]
+            ["metrics"]
+            ["POFA"]
+        )
+
+        print(
+            f"{value:>15.4f}",
+            end=" "
+        )
+
+    print()
+
+    # Mean delay
     print(
-        f"{'Detections':<30}"
-        f"{stare_results['detections']:>16}"
-        f"{rr['detections']:>18}"
-        f"{ucb['detections']:>16}"
+        f"{'Mean Delay':<25}",
+        end=""
     )
 
+    for name in names:
+        value = (
+            all_results[name]
+            ["metrics"]
+            ["mean_detection_delay"]
+        )
+        if value is None:
+            print(
+                f"{'N/A':>15}",
+                end=" "
+            )
+        else:
+            print(
+                f"{value:>15.2f}",
+                end=" "
+            )
+    print()
+
+    # Spectrum coverage
     print(
-        f"{'False Alarms':<30}"
-        f"{stare_results['false_alarms']:>16}"
-        f"{rr['false_alarms']:>18}"
-        f"{ucb['false_alarms']:>16}"
+        f"{'Spectrum Coverage':<25}",
+        end=""
     )
 
-    print("=" * 80)
+    for name in names:
+        value = (
+            all_results[name]
+            ["metrics"]
+            ["spectrum_coverage"]
+        )
+        print(
+            f"{value:>15.2%}",
+            end=" "
+        )
+    print()
+
+    # Detections
+    print(
+        f"{'Detections':<25}",
+        end=""
+    )
+
+    for name in names:
+        value = (
+            all_results[name]
+            ["metrics"]
+            ["detections"]
+        )
+        print(
+            f"{value:>15}",
+            end=" "
+        )
+    print()
+
+    # Runtime
+    print(
+        f"{'Runtime (seconds)':<25}",
+        end=""
+    )
+
+    for name in names:
+        value = (
+            all_results[name]
+            ["runtime"]
+        )
+        print(
+            f"{value:>15.4f}",
+            end=" "
+        )
+    print()
+    print("=" * 100)
 
 
 if __name__ == "__main__":

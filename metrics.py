@@ -1,246 +1,209 @@
 import numpy as np
 
 
-def calculate_scan_metrics(
-    occupancy_grid,
+def calculate_metrics(
+    x_grid,
     actions,
     observations,
     truths,
     scanned
 ):
 
-    actions = np.asarray(
-        actions
-    )
-
-    observations = np.asarray(
-        observations
-    )
-
-    truths = np.asarray(
-        truths
-    )
-
-    scanned = np.asarray(
-        scanned
-    )
+    actions = np.asarray(actions)
+    observations = np.asarray(observations)
+    truths = np.asarray(truths)
+    scanned = np.asarray(scanned)
 
     n_slots = len(actions)
 
     global_active = (
-        occupancy_grid[
-            :,
-            :n_slots
-        ].sum(axis=0) > 0
+        x_grid[:, :n_slots].sum(axis=0) > 0
     )
 
     total_active_slots = int(
         global_active.sum()
     )
 
-    active_scans = (
-        (truths == 1)
-        & (scanned == 1)
-    )
-
-    idle_scans = (
-        (truths == 0)
-        & (scanned == 1)
-    )
-
+    # Actual successful detections
     detections = int(
         np.sum(
-            active_scans
+            (truths == 1)
             & (observations == 1)
+            & (scanned == 1)
         )
     )
 
+    # False alarms
     false_alarms = int(
         np.sum(
-            idle_scans
+            (truths == 0)
             & (observations == 1)
+            & (scanned == 1)
         )
     )
 
-    active_observations = int(
-        np.sum(active_scans)
+    idle_scans = int(
+        np.sum(
+            (truths == 0)
+            & (scanned == 1)
+        )
     )
 
-    idle_observations = int(
-        np.sum(idle_scans)
-    )
-
-    receiver_pod = (
-        detections
-        / active_observations
-        if active_observations > 0
-        else 0.0
-    )
-
-    interception_rate = (
-        detections
-        / total_active_slots
+    # POD
+    POD = (
+        detections / total_active_slots
         if total_active_slots > 0
         else 0.0
     )
 
-    pofa = (
-        false_alarms
-        / idle_observations
-        if idle_observations > 0
+    # POFA
+    POFA = (
+        false_alarms / idle_scans
+        if idle_scans > 0
         else 0.0
     )
 
-    avg_intercept_delay = (
-        compute_intercept_delay(
-            occupancy_grid,
-            actions,
-            observations,
-            scanned
-        )
+    # Capture rate
+    capture_rate = POD
+
+    # Missed active slots
+    missed_detections = max(
+        total_active_slots - detections,
+        0
     )
 
-    return {
-        "detections": detections,
-        "false_alarms": false_alarms,
-        "total_active_slots": (
-            total_active_slots
-        ),
-        "active_observations": (
-            active_observations
-        ),
-        "idle_observations": (
-            idle_observations
-        ),
-        "receiver_POD": round(
-            receiver_pod,
-            4
-        ),
-        "interception_rate": round(
-            interception_rate,
-            4
-        ),
-        "POFA": round(
-            pofa,
-            4
-        ),
-        "avg_intercept_time_slots": (
-            avg_intercept_delay
+    # Spectrum coverage
+    scanned_bands = set(
+        actions[actions >= 0]
+    )
+
+    n_bands = x_grid.shape[0]
+
+    coverage = (
+        len(scanned_bands) / n_bands
+        if n_bands > 0
+        else 0.0
+    )
+
+    # Retuning / scan cost
+    total_scans = int(
+        scanned.sum()
+    )
+
+    total_time = len(actions)
+
+    scan_fraction = (
+        total_scans / total_time
+        if total_time > 0
+        else 0.0
+    )
+
+    # Detection delay
+    delays = _compute_detection_delays(
+        x_grid,
+        actions,
+        observations,
+        scanned
+    )
+
+    if delays:
+
+        mean_delay = float(
+            np.mean(delays)
         )
+
+        median_delay = float(
+            np.median(delays)
+        )
+
+        p95_delay = float(
+            np.percentile(delays, 95)
+        )
+
+    else:
+
+        mean_delay = None
+        median_delay = None
+        p95_delay = None
+
+    # Results
+    return {
+
+        "detections": detections,
+
+        "missed_detections":
+            missed_detections,
+
+        "false_alarms":
+            false_alarms,
+
+        "total_active_events":
+            total_active_slots,
+
+        "POD":
+            round(POD, 4),
+
+        "POFA":
+            round(POFA, 4),
+
+        "capture_rate":
+            round(capture_rate, 4),
+
+        "mean_detection_delay":
+            mean_delay,
+
+        "median_detection_delay":
+            median_delay,
+
+        "p95_detection_delay":
+            p95_delay,
+
+        "spectrum_coverage":
+            round(coverage, 4),
+
+        "total_scans":
+            total_scans,
+
+        "scan_fraction":
+            round(scan_fraction, 4)
     }
 
 
-def calculate_stare_metrics(
-    occupancy_grid,
-    observations
-):
-
-    observations = np.asarray(
-        observations
-    )
-
-    active = (
-        occupancy_grid == 1
-    )
-
-    idle = (
-        occupancy_grid == 0
-    )
-
-    detections = int(
-        np.sum(
-            active
-            & (observations == 1)
-        )
-    )
-
-    false_alarms = int(
-        np.sum(
-            idle
-            & (observations == 1)
-        )
-    )
-
-    active_cells = int(
-        np.sum(active)
-    )
-
-    idle_cells = int(
-        np.sum(idle)
-    )
-
-    pod = (
-        detections
-        / active_cells
-        if active_cells > 0
-        else 0.0
-    )
-
-    pofa = (
-        false_alarms
-        / idle_cells
-        if idle_cells > 0
-        else 0.0
-    )
-
-    return {
-        "detections": detections,
-        "false_alarms": false_alarms,
-        "active_cells": active_cells,
-        "idle_cells": idle_cells,
-        "POD": round(
-            pod,
-            4
-        ),
-        "POFA": round(
-            pofa,
-            4
-        )
-    }
-
-
-def compute_intercept_delay(
-    occupancy_grid,
+def _compute_detection_delays(
+    x_grid,
     actions,
     observations,
     scanned
 ):
 
-    n_bands, n_slots = (
-        occupancy_grid.shape
-    )
+    n_bands, n_slots = x_grid.shape
 
     delays = []
 
-    for band in range(
-        n_bands
-    ):
+    for band in range(n_bands):
 
-        active = (
-            occupancy_grid[
-                band,
-                :n_slots
-            ] == 1
-        )
-
+        active = False
         start = None
-
         caught = False
 
         for t in range(
-            n_slots
+            min(n_slots, len(actions))
         ):
 
-            if (
-                active[t]
-                and start is None
-            ):
+            is_active = (
+                x_grid[band, t] == 1
+            )
 
+            # New pulse/burst
+            if is_active and not active:
+
+                active = True
                 start = t
                 caught = False
 
+            # Detection during burst
             if (
-                start is not None
+                active
                 and not caught
                 and scanned[t] == 1
                 and actions[t] == band
@@ -253,125 +216,94 @@ def compute_intercept_delay(
 
                 caught = True
 
-            if (
-                start is not None
-                and not active[t]
-            ):
+            # Burst ended
+            if active and not is_active:
 
+                active = False
                 start = None
-                caught = False
 
-    if not delays:
-        return None
-
-    return round(
-        float(
-            np.mean(delays)
-        ),
-        2
-    )
+    return delays
 
 
-def print_scan_metrics(
-    name,
-    results
-):
+def print_metrics(name, results):
 
-    print("\n")
-    print("=" * 60)
-    print(
-        f"{name} RESULTS"
-    )
-    print("=" * 60)
+    print("\n" + "=" * 55)
+    print(f"{name} RESULTS")
+    print("=" * 55)
 
     print(
-        f"Detections: "
+        f"Detections:          "
         f"{results['detections']}"
     )
 
     print(
-        f"False alarms: "
+        f"Missed detections:   "
+        f"{results['missed_detections']}"
+    )
+
+    print(
+        f"False alarms:        "
         f"{results['false_alarms']}"
     )
 
     print(
-        f"Total active slots: "
-        f"{results['total_active_slots']}"
+        f"Total active events: "
+        f"{results['total_active_events']}"
+    )
+
+    print()
+
+    print(
+        f"POD:                 "
+        f"{results['POD']:.4f}"
     )
 
     print(
-        f"Active observations: "
-        f"{results['active_observations']}"
-    )
-
-    print(
-        f"Receiver POD: "
-        f"{results['receiver_POD']:.4f}"
-    )
-
-    print(
-        f"Interception rate: "
-        f"{results['interception_rate']:.4f}"
-    )
-
-    print(
-        f"POFA: "
+        f"POFA:                "
         f"{results['POFA']:.4f}"
     )
 
-    if (
-        results[
-            "avg_intercept_time_slots"
-        ]
-        is not None
-    ):
+    print(
+        f"Capture rate:        "
+        f"{results['capture_rate']:.2%}"
+    )
+
+    print(
+        f"Spectrum coverage:   "
+        f"{results['spectrum_coverage']:.2%}"
+    )
+
+    print(
+        f"Total scans:         "
+        f"{results['total_scans']}"
+    )
+
+    print(
+        f"Scan fraction:       "
+        f"{results['scan_fraction']:.2%}"
+    )
+
+    if results["mean_detection_delay"] is not None:
 
         print(
-            f"Avg intercept delay: "
-            f"{results['avg_intercept_time_slots']} slots"
+            f"Mean delay:          "
+            f"{results['mean_detection_delay']:.2f} slots"
+        )
+
+        print(
+            f"Median delay:        "
+            f"{results['median_detection_delay']:.2f} slots"
+        )
+
+        print(
+            f"95th percentile:     "
+            f"{results['p95_detection_delay']:.2f} slots"
         )
 
     else:
 
         print(
-            "Avg intercept delay: N/A"
+            "Detection delay:     N/A"
         )
 
-    print("=" * 60)
-
-
-def print_stare_metrics(
-    results
-):
-
-    print("\n")
-    print("=" * 60)
-    print("STARE RECEIVER RESULTS")
-    print("=" * 60)
-
-    print(
-        f"Detections: "
-        f"{results['detections']}"
-    )
-
-    print(
-        f"False alarms: "
-        f"{results['false_alarms']}"
-    )
-
-    print(
-        f"Active cells: "
-        f"{results['active_cells']}"
-    )
-
-    print(
-        f"POD: "
-        f"{results['POD']:.4f}"
-    )
-
-    print(
-        f"POFA: "
-        f"{results['POFA']:.4f}"
-    )
-
-    print("=" * 60)
+    print("=" * 55)
