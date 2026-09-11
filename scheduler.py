@@ -1,59 +1,76 @@
 import numpy as np
 
-# ROUND ROBIN
-class RoundRobinScheduler:
 
+class RoundRobinScheduler:
     def __init__(self, n_bands):
         self.n_bands = n_bands
+        self.next_band = 0
 
-    def select_action(self, t):
-        return t % self.n_bands
+    def select_action(self, t=None):
+        # Called only when the receiver is ready.
+        # Therefore one action corresponds to one frequency visit,
+        # not one raw time slot.
+        action = self.next_band
+
+        self.next_band = (
+            self.next_band + 1
+        ) % self.n_bands
+
+        return action
 
     def update(self, action, obs):
         pass
 
-# UCB
+
 class UCBScheduler:
-
     def __init__(self, n_bands):
-
         self.n_bands = n_bands
 
         self.counts = np.zeros(
             n_bands,
-            dtype=np.int64
+            dtype=np.int64,
         )
 
         self.successes = np.zeros(
             n_bands,
-            dtype=np.float64
+            dtype=np.float64,
         )
 
-    def select_action(self, t):
-
+    def select_action(self, t=None):
+        # Force every band to be sampled once.
         for i in range(self.n_bands):
-
             if self.counts[i] == 0:
                 return i
 
-        total = np.sum(self.counts)
+        total = max(
+            int(np.sum(self.counts)),
+            1,
+        )
 
         p_hat = (
             self.successes
-            / self.counts
+            / np.maximum(
+                self.counts,
+                1,
+            )
         )
 
         bonus = np.sqrt(
-            2 * np.log(total + 1)
-            / self.counts
+            2.0
+            * np.log(total + 1.0)
+            / np.maximum(
+                self.counts,
+                1,
+            )
         )
 
-        scores = p_hat + bonus
-
-        return int(np.argmax(scores))
+        return int(
+            np.argmax(
+                p_hat + bonus
+            )
+        )
 
     def update(self, action, obs):
-
         if action < 0:
             return
 
@@ -61,19 +78,15 @@ class UCBScheduler:
         self.successes[action] += obs
 
 
-# RESTLESS BANDIT
 class RestlessBanditScheduler:
-
     def __init__(
         self,
         n_bands,
         prior=0.05,
         decay=0.98,
-        exploration=0.2
+        exploration=0.2,
     ):
-
         self.n_bands = n_bands
-
         self.prior = prior
         self.decay = decay
         self.exploration = exploration
@@ -81,24 +94,30 @@ class RestlessBanditScheduler:
         self.beliefs = np.full(
             n_bands,
             prior,
-            dtype=np.float64
+            dtype=np.float64,
         )
 
         self.counts = np.zeros(
             n_bands,
-            dtype=np.int64
+            dtype=np.int64,
         )
 
-    def select_action(self, t):
+    def select_action(self, t=None):
+        step = (
+            0
+            if t is None
+            else t
+        )
 
         uncertainty = np.sqrt(
-            np.log(t + 2)
-            / (self.counts + 1)
+            np.log(step + 2.0)
+            / (self.counts + 1.0)
         )
 
         scores = (
             self.beliefs
-            + self.exploration * uncertainty
+            + self.exploration
+            * uncertainty
         )
 
         return int(
@@ -106,12 +125,11 @@ class RestlessBanditScheduler:
         )
 
     def update(self, action, obs):
-
-        # Every band evolves.
         self.beliefs = (
-            self.decay * self.beliefs
-            +
-            (1 - self.decay) * self.prior
+            self.decay
+            * self.beliefs
+            + (1.0 - self.decay)
+            * self.prior
         )
 
         if action < 0:
@@ -124,68 +142,64 @@ class RestlessBanditScheduler:
         )
 
         self.beliefs[action] = (
-            (1 - alpha)
+            (1.0 - alpha)
             * self.beliefs[action]
-            +
-            alpha * obs
+            + alpha * obs
         )
 
-# POMDP
-class POMDPScheduler:
 
+class POMDPScheduler:
     def __init__(
         self,
         n_bands,
         p_on=0.02,
         p_stay=0.90,
-        p_detect=0.8,
-        p_false_alarm=0.1,
-        exploration=0.1
+        exploration=0.1,
     ):
-
         self.n_bands = n_bands
 
         self.beliefs = np.full(
             n_bands,
             0.05,
-            dtype=np.float64
+            dtype=np.float64,
         )
 
         self.p_on = p_on
         self.p_stay = p_stay
-
-        self.p_detect = p_detect
-        self.p_false_alarm = p_false_alarm
-
         self.exploration = exploration
 
     def predict(self):
-
         self.beliefs = (
-            self.beliefs * self.p_stay
-            +
-            (1 - self.beliefs) * self.p_on
+            self.beliefs
+            * self.p_stay
+            + (1.0 - self.beliefs)
+            * self.p_on
         )
 
-    def select_action(self, t):
-
+    def select_action(self, t=None):
         uncertainty = (
-            4
+            4.0
             * self.beliefs
-            * (1 - self.beliefs)
+            * (1.0 - self.beliefs)
         )
 
         scores = (
             self.beliefs
-            + self.exploration * uncertainty
+            + self.exploration
+            * uncertainty
         )
 
         return int(
             np.argmax(scores)
         )
 
-    def update(self, action, obs):
-
+    def update(
+        self,
+        action,
+        obs,
+        p_detect=0.8,
+        p_false_alarm=0.01,
+    ):
         if action < 0:
             return
 
@@ -194,49 +208,43 @@ class POMDPScheduler:
         prior = self.beliefs[action]
 
         if obs == 1:
-
             numerator = (
-                self.p_detect * prior
+                p_detect * prior
             )
 
             denominator = (
-                self.p_detect * prior
-                +
-                self.p_false_alarm
-                * (1 - prior)
+                p_detect * prior
+                + p_false_alarm
+                * (1.0 - prior)
             )
 
         else:
-
             numerator = (
-                (1 - self.p_detect)
+                (1.0 - p_detect)
                 * prior
             )
 
             denominator = (
-                (1 - self.p_detect)
+                (1.0 - p_detect)
                 * prior
-                +
-                (1 - self.p_false_alarm)
-                * (1 - prior)
+                + (1.0 - p_false_alarm)
+                * (1.0 - prior)
             )
 
         if denominator > 0:
-
             self.beliefs[action] = (
                 numerator / denominator
             )
 
-# RUN SCHEDULER
+
 def run_scheduler(
     occupancy_grid,
     amplitude_grid,
     pw_grid,
     aoa_grid,
     scheduler,
-    seed=0
+    seed=0,
 ):
-
     from environment import ScanEnvironment
 
     env = ScanEnvironment(
@@ -244,98 +252,139 @@ def run_scheduler(
         amplitude_grid=amplitude_grid,
         pw_grid=pw_grid,
         aoa_grid=aoa_grid,
-        seed=seed
+        seed=seed,
     )
 
     env.reset()
 
     n_slots = occupancy_grid.shape[1]
 
-    # -1 means the receiver was not scanning
     actions = np.full(
         n_slots,
         -1,
-        dtype=np.int32
+        dtype=np.int32,
     )
 
     observations = np.zeros(
         n_slots,
-        dtype=np.int8
+        dtype=np.int8,
     )
 
     truths = np.zeros(
         n_slots,
-        dtype=np.int8
+        dtype=np.int8,
     )
 
     scanned = np.zeros(
         n_slots,
-        dtype=np.int8
+        dtype=np.int8,
     )
 
     snr = np.full(
         n_slots,
         np.nan,
-        dtype=np.float32
+        dtype=np.float32,
     )
 
     amplitudes = np.full(
         n_slots,
         np.nan,
-        dtype=np.float32
+        dtype=np.float32,
     )
 
     p_detect = np.full(
         n_slots,
         np.nan,
-        dtype=np.float32
+        dtype=np.float32,
+    )
+
+    p_false_alarm = np.full(
+        n_slots,
+        np.nan,
+        dtype=np.float32,
     )
 
     done = False
     t = 0
+    requested_action = None
 
     while not done:
+        # CRITICAL FIX:
+        # Do not choose a new band every raw time slot.
+        # The receiver must finish retuning + dwell first.
+        if (
+            env.receiver_ready
+            or requested_action is None
+        ):
+            requested_action = (
+                scheduler.select_action(t)
+            )
 
-        requested_action = (
-            scheduler.select_action(t)
-        )
-
-        obs, truth, done, info = env.step(
+        (
+            obs,
+            truth,
+            done,
+            info,
+        ) = env.step(
             requested_action
         )
 
-        actual_band = info["band"]
-
         if info["scanned"]:
-
-            actions[t] = actual_band
+            actions[t] = info["band"]
             scanned[t] = 1
 
-            scheduler.update(
-                actual_band,
-                obs
-            )
+            if isinstance(
+                scheduler,
+                POMDPScheduler,
+            ):
+                scheduler.update(
+                    info["band"],
+                    obs,
+                    p_detect=(
+                        info["p_detect"]
+                        if info["p_detect"]
+                        is not None
+                        else 0.8
+                    ),
+                    p_false_alarm=(
+                        info["p_false_alarm"]
+                        if info["p_false_alarm"]
+                        is not None
+                        else 0.01
+                    ),
+                )
+            else:
+                scheduler.update(
+                    info["band"],
+                    obs,
+                )
 
             if info["snr"] is not None:
                 snr[t] = info["snr"]
 
-            if info["amplitude"] is not None:
+            if (
+                info["amplitude"]
+                is not None
+            ):
                 amplitudes[t] = (
                     info["amplitude"]
                 )
 
-            if info["p_detect"] is not None:
+            if (
+                info["p_detect"]
+                is not None
+            ):
                 p_detect[t] = (
                     info["p_detect"]
                 )
 
-        else:
-
-            # No useful observation was obtained.
-            scheduler.update(
-                -1,
-                0
-            )
+            if (
+                info["p_false_alarm"]
+                is not None
+            ):
+                p_false_alarm[t] = (
+                    info["p_false_alarm"]
+                )
 
         observations[t] = obs
         truths[t] = truth
@@ -349,5 +398,6 @@ def run_scheduler(
         scanned,
         snr,
         amplitudes,
-        p_detect
+        p_detect,
+        p_false_alarm,
     )

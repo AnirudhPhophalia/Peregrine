@@ -1,26 +1,16 @@
 import time
 
+from build_grid import build_grid
 from dataset_loader import load_dataset
 from inspect_dataset import inspect_dataset
-from build_grid import (
-    build_grid,
-    estimate_slot_width
-)
-
+from metrics import calculate_metrics, print_metrics
 from scheduler import (
+    POMDPScheduler,
+    RestlessBanditScheduler,
     RoundRobinScheduler,
     UCBScheduler,
-    RestlessBanditScheduler,
-    POMDPScheduler,
-    run_scheduler
+    run_scheduler,
 )
-
-from metrics import (
-    calculate_metrics,
-    print_metrics
-)
-
-from config import TARGET_SLOTS
 
 
 def run_experiment(
@@ -29,9 +19,8 @@ def run_experiment(
     occupancy_grid,
     amplitude_grid,
     pw_grid,
-    aoa_grid
+    aoa_grid,
 ):
-
     print("\n" + "=" * 60)
     print(f"RUNNING: {name}")
     print("=" * 60)
@@ -45,20 +34,15 @@ def run_experiment(
         scanned,
         snr,
         amplitudes,
-        p_detect
+        p_detect,
+        p_false_alarm,
     ) = run_scheduler(
-
         occupancy_grid=occupancy_grid,
-
         amplitude_grid=amplitude_grid,
-
         pw_grid=pw_grid,
-
         aoa_grid=aoa_grid,
-
         scheduler=scheduler,
-
-        seed=0
+        seed=0,
     )
 
     runtime = (
@@ -67,87 +51,108 @@ def run_experiment(
     )
 
     results = calculate_metrics(
-
         occupancy_grid,
-
         actions,
-
         observations,
-
         truths,
-
-        scanned
+        scanned,
     )
 
     print_metrics(
         name,
-        results
+        results,
+    )
+
+    valid_pd = (
+        p_detect[
+            ~(
+                p_detect != p_detect
+            )
+        ]
+    )
+
+    valid_pfa = (
+        p_false_alarm[
+            ~(
+                p_false_alarm
+                != p_false_alarm
+            )
+        ]
     )
 
     print(
         f"\nRuntime: {runtime:.4f} seconds"
     )
 
+    if len(valid_pd):
+        print(
+            f"Mean dynamic p_detect: "
+            f"{valid_pd.mean():.4f}"
+        )
+
+    if len(valid_pfa):
+        print(
+            f"Mean dynamic p_false_alarm: "
+            f"{valid_pfa.mean():.4f}"
+        )
+
     return results, runtime
 
 
 def main():
-    print("\nLOADING DATASET...")
-    df = load_dataset()
-    inspect_dataset(df)
-    # DATASET COLUMNS
-    TOA_COL = 0
-    FREQ_COL = 1
-    PW_COL = 2
-    AOA_COL = 3
-    AMP_COL = 4
-    # SLOT WIDTH
+    print("\nLOADING STARE DATASET...")
     print(
-        "\nCALCULATING SLOT WIDTH..."
-    )
-    slot_width = estimate_slot_width(
-        df[TOA_COL].to_numpy(),
-        TARGET_SLOTS
+        "STARE data is used as the RF ground truth."
     )
     print(
-        "Slot width:",
-        slot_width
+        "The realistic scan receiver is simulated "
+        "by this project."
     )
 
-    # BUILD RF ENVIRONMENT
-    print("\nBUILDING RF GROUND TRUTH...")
+    df = load_dataset(
+        mode="stare"
+    )
+
+    inspect_dataset(df)
+
+    print(
+        "\nBUILDING RF GROUND TRUTH..."
+    )
 
     (
         occupancy_grid,
         amplitude_grid,
         pw_grid,
         aoa_grid,
-        slot_width
+        slot_width,
     ) = build_grid(
-
         df=df,
-
-        freq_col=FREQ_COL,
-
-        toa_col=TOA_COL,
-
-        pw_col=PW_COL,
-
-        aoa_col=AOA_COL,
-
-        amp_col=AMP_COL,
-
-        slot_width=slot_width
+        freq_col=1,
+        toa_col=0,
+        pw_col=2,
+        aoa_col=3,
+        amp_col=4,
     )
 
-    # NUMBER OF BANDS
     n_bands = (
         occupancy_grid.shape[0]
     )
 
-    # CREATE SCHEDULERS
-    schedulers = {
+    print(
+        f"\nReceiver bands: {n_bands}"
+    )
 
+    print(
+        f"Time slots: "
+        f"{occupancy_grid.shape[1]:,}"
+    )
+
+    print(
+        f"Slot width: "
+        f"{slot_width:.3f} us"
+    )
+
+    schedulers = {
         "ROUND ROBIN":
             RoundRobinScheduler(
                 n_bands
@@ -166,204 +171,142 @@ def main():
         "POMDP":
             POMDPScheduler(
                 n_bands
-            )
+            ),
     }
 
-    # RUN
     all_results = {}
 
-    for name, scheduler in schedulers.items():
+    for (
+        name,
+        scheduler,
+    ) in schedulers.items():
 
-        results, runtime = run_experiment(
-
-            name,
-
-            scheduler,
-
-            occupancy_grid,
-
-            amplitude_grid,
-
-            pw_grid,
-
-            aoa_grid
+        results, runtime = (
+            run_experiment(
+                name,
+                scheduler,
+                occupancy_grid,
+                amplitude_grid,
+                pw_grid,
+                aoa_grid,
+            )
         )
 
         all_results[name] = {
-
             "metrics": results,
-
-            "runtime": runtime
+            "runtime": runtime,
         }
 
-    # FINAL COMPARISON
     print("\n")
+    print(
+        "=" * 100
+    )
+    print(
+        "FINAL SCHEDULER COMPARISON"
+    )
+    print(
+        "=" * 100
+    )
 
-    print("=" * 100)
-    print("FINAL SCHEDULER COMPARISON")
-    print("=" * 100)
-
-    names = [
-
-        "ROUND ROBIN",
-
-        "UCB BANDIT",
-
-        "RESTLESS BANDIT",
-
-        "POMDP"
-    ]
+    names = list(
+        schedulers.keys()
+    )
 
     print(
         f"{'Metric':<25}"
-        f"{'Round Robin':>16}"
-        f"{'UCB':>16}"
-        f"{'Restless':>16}"
-        f"{'POMDP':>16}"
-    )
-
-    print("-" * 100)
-
-    # Capture rate
-    print(
-        f"{'Capture Rate':<25}",
-        end=""
-    )
-
-    for name in names:
-
-        value = (
-            all_results[name]
-            ["metrics"]
-            ["capture_rate"]
+        + "".join(
+            f"{name:>18}"
+            for name in names
         )
+    )
 
+    print(
+        "-" * 100
+    )
+
+    metric_rows = [
+        (
+            "Capture Rate",
+            "capture_rate",
+        ),
+        (
+            "POD",
+            "POD",
+        ),
+        (
+            "POFA",
+            "POFA",
+        ),
+        (
+            "Mean Delay",
+            "mean_detection_delay",
+        ),
+        (
+            "Spectrum Coverage",
+            "spectrum_coverage",
+        ),
+        (
+            "Detections",
+            "detections",
+        ),
+        (
+            "False Alarms",
+            "false_alarms",
+        ),
+        (
+            "Runtime (seconds)",
+            None,
+        ),
+    ]
+
+    for label, key in metric_rows:
         print(
-            f"{value:>15.2%}",
-            end=" "
+            f"{label:<25}",
+            end="",
         )
 
-    print()
+        for name in names:
+            if key is None:
+                value = (
+                    all_results[name]
+                    ["runtime"]
+                )
 
-    # POD
-    print(
-        f"{'POD':<25}",
-        end=""
-    )
+                text = f"{value:.3f}"
 
-    for name in names:
+            else:
+                value = (
+                    all_results[name]
+                    ["metrics"]
+                    [key]
+                )
 
-        value = (
-            all_results[name]
-            ["metrics"]
-            ["POD"]
-        )
+                if value is None:
+                    text = "N/A"
 
-        print(
-            f"{value:>15.4f}",
-            end=" "
-        )
+                elif (
+                    "rate" in key
+                    or key in {
+                        "POD",
+                        "POFA",
+                        "spectrum_coverage",
+                    }
+                ):
+                    text = f"{value:.4f}"
 
-    print()
+                else:
+                    text = str(value)
 
-    # POFA
-    print(
-        f"{'POFA':<25}",
-        end=""
-    )
-
-    for name in names:
-
-        value = (
-            all_results[name]
-            ["metrics"]
-            ["POFA"]
-        )
-
-        print(
-            f"{value:>15.4f}",
-            end=" "
-        )
-
-    print()
-
-    # Mean delay
-    print(
-        f"{'Mean Delay':<25}",
-        end=""
-    )
-
-    for name in names:
-        value = (
-            all_results[name]
-            ["metrics"]
-            ["mean_detection_delay"]
-        )
-        if value is None:
             print(
-                f"{'N/A':>15}",
-                end=" "
+                f"{text:>18}",
+                end="",
             )
-        else:
-            print(
-                f"{value:>15.2f}",
-                end=" "
-            )
-    print()
 
-    # Spectrum coverage
+        print()
+
     print(
-        f"{'Spectrum Coverage':<25}",
-        end=""
+        "=" * 100
     )
-
-    for name in names:
-        value = (
-            all_results[name]
-            ["metrics"]
-            ["spectrum_coverage"]
-        )
-        print(
-            f"{value:>15.2%}",
-            end=" "
-        )
-    print()
-
-    # Detections
-    print(
-        f"{'Detections':<25}",
-        end=""
-    )
-
-    for name in names:
-        value = (
-            all_results[name]
-            ["metrics"]
-            ["detections"]
-        )
-        print(
-            f"{value:>15}",
-            end=" "
-        )
-    print()
-
-    # Runtime
-    print(
-        f"{'Runtime (seconds)':<25}",
-        end=""
-    )
-
-    for name in names:
-        value = (
-            all_results[name]
-            ["runtime"]
-        )
-        print(
-            f"{value:>15.4f}",
-            end=" "
-        )
-    print()
-    print("=" * 100)
 
 
 if __name__ == "__main__":
