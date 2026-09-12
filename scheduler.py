@@ -312,13 +312,8 @@ def run_scheduler(
         # CRITICAL FIX:
         # Do not choose a new band every raw time slot.
         # The receiver must finish retuning + dwell first.
-        if (
-            env.receiver_ready
-            or requested_action is None
-        ):
-            requested_action = (
-                scheduler.select_action(t)
-            )
+        if requested_action is None:
+            requested_action = scheduler.select_action(t)
 
         (
             obs,
@@ -332,6 +327,8 @@ def run_scheduler(
         if info["scanned"]:
             actions[t] = info["band"]
             scanned[t] = 1
+
+            requested_action = None
 
             if isinstance(
                 scheduler,
