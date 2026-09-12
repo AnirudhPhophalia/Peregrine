@@ -225,10 +225,10 @@ def main():
     )
 
     metric_rows = [
-        (
-            "Capture Rate",
-            "capture_rate",
-        ),
+#        (
+#            "Capture Rate",
+#            "capture_rate",
+#        ),
         (
             "POD",
             "POD",
